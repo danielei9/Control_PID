@@ -10,13 +10,13 @@ PRACTICA 1: IMPLEMENTACION DE UN CONTROLADOR PARA UN MOTOR DE DC
 #define VERSION_SW "1.0"
 
 #define ACTIVA_P1A
-//#define DEBUG_P1A
+// #define DEBUG_P1A
 #define ACTIVA_P1B1
 #define ACTIVA_P1B2
 #define ACTIVA_P1B3
 #define ACTIVA_P1C
 #define DEBUG_P1C
-//#define ACTIVA_P1C_MED_ANG
+// #define ACTIVA_P1C_MED_ANG
 // #define ACTIVA_P1D2
 // #define ACTIVA_P1D3
 
@@ -32,7 +32,7 @@ PRACTICA 1: IMPLEMENTACION DE UN CONTROLADOR PARA UN MOTOR DE DC
 
 // TIEMPOS
 #define BLOQUEO_TAREA_LOOPCONTR_MS 10
-#define BLOQUEO_TAREA_MEDIDA_MS 1000
+#define BLOQUEO_TAREA_MEDIDA_MS 100
 
 // Configuración PWM  ////////////////////////////////////////////////////////////////////
 uint32_t pwmfreq = 1000; // 1KHz
@@ -58,35 +58,35 @@ const uint8_t B_enc_pin = 34;
 // const float conv_rad_grados = ;
 
 // Declarar funciones ////////////////////////////////////////////////////////////////////
-void config_sp();				  // Configuracion puerto serie
-void config_oled();				  // Configuracion OLED
-void config_enc();				  // Configuracion del encoder
-void config_PWM();				  // Configuracion PWM
-void excita_motor(float v_motor); // Excitacion motor con PWM
-// float interpola_vel_vol_lut(float x); // Interpolacion velocidad/voltios LUT
+void config_sp();					  // Configuracion puerto serie
+void config_oled();					  // Configuracion OLED
+void config_enc();					  // Configuracion del encoder
+void config_PWM();					  // Configuracion PWM
+void excita_motor(float v_motor);	  // Excitacion motor con PWM
+float interpola_vel_vol_lut(float x); // Interpolacion velocidad/voltios LUT
 
 // TABLA VELOCIDAD-VOLTAJE P1D
 #ifdef ACTIVA_P1D2
 #define LONG_LUT 12
 // Vector de tensiones
-const float Vol_LUT[LONG_LUT] = {0, , , 2, 3, 4, 5, 6, 7, 8, 9, 100};
+const float Vol_LUT[LONG_LUT] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 // Vector de velocidades
-const float Vel_LUT[LONG_LUT] = {0, 0, ...};
+const float Vel_LUT[LONG_LUT] = {0, 1.15, 3, 4.1, 5.4, 5.9, 6.4, 7, 7.5, 7.5, 7.5, 7.5};
 #endif
 uint8_t byteVal = 0;
 
 uint8_t aVal, bVal;
 
-// Variables globales ////////////////////////////////////////////////////////////////////
+// Variables globales //////////////////////////////////////////////////////////////////// V12
 int32_t ang_cnt = 0;
 float pwm_volt = 0;
 // int32_t pwm_motor = 0;
 // int32_t sign_v_ant = 0;
-float v_medida = 0; // Valor medido de angulo o velocidad -----------------
-// float ref_val = 0;     // Valor de referencia de angulo o velocidad
-// int8_t start_stop = 0; //1 -> en funcionamiento | 0 -> parado
+float v_medida = 0;	   // Valor medido de angulo o velocidad -----------------
+float ref_val = 0;	   // Valor de referencia de angulo o velocidad
+int8_t start_stop = 0; // 1 -> en funcionamiento | 0 -> parado
 // float K_p = ;
-
+float kp = 5.0, kd = 1.0, ki = 5.0;
 // Declaracion objetos  ////////////////////////////////////////////////////////////////////
 
 xQueueHandle cola_enc; // Cola encoder
@@ -98,6 +98,8 @@ xQueueHandle cola_enc; // Cola encoder
 /*
  Rutina de atención a interrupción ISC_enc --------------------------------------------
 */
+bool angulo = true;
+bool windup = true;
 
 void IRAM_ATTR ISR_enc()
 {
@@ -225,14 +227,68 @@ void task_config(void *pvParameter)
 		// Detectar caracter enviado
 		if (Serial.available())
 		{
-			if (Serial.read() == 'V')
+			ini_char = Serial.read();
+			if (ini_char == 'V')
 			{
-				ini_char = 'V';
 				// Guardar valor recibido
 				float recived = Serial.parseFloat();
 				// Escribir el valor recibido en la consola
 				pwm_volt = recived;
-				// printf("El valor es %f.\n", pwm_volt);
+				printf("El Voltaje valor es %f.\n", pwm_volt);
+			}
+			else if (ini_char == 'R')
+			{
+				float recived = Serial.parseFloat();
+				ref_val = recived;
+				// En caso de ser Angulo se debe convertir a radianes
+				if (angulo)
+				{
+					kp = 4;
+					kd = 0;
+					ki = 0.02;
+					ref_val = ref_val * PI / 180;
+				}
+
+				printf("El ref_val valor es %f rps.\n", ref_val);
+			}
+			else if (ini_char == 'S')
+			{
+				float recived = Serial.parseFloat();
+				start_stop = recived;
+				if (start_stop)
+					printf("---START---\n");
+				else
+					printf("---STOP---\n");
+			}
+			else if (ini_char == 'p')
+			{
+				float recived = Serial.parseFloat();
+				kp = recived;
+				printf("El kp valor es %f.\n", kp);
+			}
+			else if (ini_char == 'd')
+			{
+				float recived = Serial.parseFloat();
+				kd = recived;
+				printf("El kd valor es %f.\n", kd);
+			}
+			else if (ini_char == 'i')
+			{
+				float recived = Serial.parseFloat();
+				ki = recived;
+				printf("El ki valor es %f.\n", ki);
+			}
+			else if (ini_char == 'A')
+			{
+				float recived = Serial.parseInt();
+				angulo = recived;
+				printf("Referencia en angulo activada?  %d.\n", angulo);
+			}
+			else if (ini_char == 'W')
+			{
+				float recived = Serial.parseInt();
+				windup = recived;
+				printf("Windup activado?  %d.\n", windup);
 			}
 		}
 		// Activacion de la tarea cada 0.1s
@@ -244,29 +300,73 @@ void task_config(void *pvParameter)
 Tarea del lazo principal del controlador  #####################################################################
 */
 float lastAngulo = 0;
-float vel = 0;
+float vel = 0, lastError = 0, lastIntegral = 0;
+float error = 0;
+
 #ifdef ACTIVA_P1B3
 void task_loopcontr(void *arg)
 {
-	while (1) 
+	while (1)
 	{
 		lastAngulo = v_medida;
+		v_medida = -(2 * PI * ang_cnt) / 1200; // ang radianes V10
 
-		v_medida = (2 * PI * ang_cnt) / 1200; // ang radianes
-		vel =  (lastAngulo - v_medida) / 0.01; // en segundos
-		vel = vel/(2*PI);
-		if(pwm_volt < 0) 
-		vel = -vel;
-		// printf("task_loopcontr \n");
-		// pwm_volt = 100;
+		vel = (v_medida - lastAngulo) / 0.01; // en segundos
+		vel = vel / (2 * PI);
+
+		if (angulo)
+		{
+			error = ref_val - v_medida;
+		}
+		else
+			error = ref_val - vel;
+
+		// if (pwm_volt < 0)
+		// 	vel = -vel;
+
+		if (start_stop)
+		{
+#ifdef ACTIVA_P1D2
+			pwm_volt = interpola_vel_vol_lut(ref_val);
+#endif
+#ifdef ACTIVA_P1D3
+			if (error < 0)
+				pwm_volt -= 0.2;
+			if (error > 0)
+				pwm_volt += 0.2;
+
+#endif
+			float proporcional = (error * kp);				// implementación de kp se
+			float integral = ((error + lastIntegral) * ki); // implementación de kp se
+			float derivartivo = ((error - lastError) * kd); // (sum(lastError - error) * ki); // implementación de kp se
+			pwm_volt = proporcional + integral + derivartivo;
+			// WindUP
+			//  SI la salida esta saturada
+			if (windup)
+			{
+				if (abs(pwm_volt) > 9)
+				{
+					// Quitamos integral
+					pwm_volt = proporcional + derivartivo;
+				}
+			}
+		}
+		else
+		{
+			// se parará el motor y se pondrán a cero las variables globales ang_cnt, pwm_motor y v_medida
+			ang_cnt = 0;
+			pwm_volt = 0;
+			v_medida = 0;
+		}
+		lastError = error;
+
 		//  Excitacion del motor con PWM
 		excita_motor(pwm_volt);
-		
 		// Activacion de la tarea cada 0.01s
 		vTaskDelay(BLOQUEO_TAREA_LOOPCONTR_MS / portTICK_PERIOD_MS);
-	} 
-} 
-#endif 
+	}
+}
+#endif
 
 /*
 Tarea del lazo principal del controlador  #####################################################################
@@ -276,13 +376,20 @@ void task_medidas(void *arg)
 {
 	while (1)
 	{
-// Mostrar medidas de angulo y velocidad del motor
-#ifdef ACTIVA_P1C_MED_ANG // Medida de angulo
-		float ang = v_medida * (360 / (2 * PI));
-		printf("Angulo -- grados: %f, radianes: %f \n", ang, v_medida);
-#else // Medida de velocidad
-		printf("velocidad: %f , lastAng: %f, currentAng: %f \n", vel,lastAngulo,v_medida);
-#endif
+		// Mostrar medidas de angulo y velocidad del motor
+		if (angulo)
+		{
+			float ang = v_medida * (360 / (2 * PI));
+			printf(" radianes: %f, error: %f, ref: %f \n", v_medida, error, ref_val);
+			// printf("grados: %f, radianes: %f, error: %f, ref: %f \n", ang, v_medida, error, ref_val);
+		}
+		else
+		{
+			//  kp = 5.0, kd = 1.0, ki = 5.0;
+			// printf("velocidad: %f, lastAng: %f, currentAng: %f, refVal: %f, kp: %f, kd: %f, ki: %f\n", vel, lastAngulo, v_medida, ref_val, kp, kd, ki);
+			printf("velocidad: %f, refVal: %f\n", vel, ref_val);
+		}
+		lastError = error;
 		vTaskDelay(BLOQUEO_TAREA_MEDIDA_MS / portTICK_PERIOD_MS);
 		// Activacion de la tarea cada 1s
 	}
@@ -348,7 +455,6 @@ void setup()
 LOOP ---- NO USAR -------------------------------------------------------------------
 */
 void loop() {}
-
 // FUNCIONES ////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -392,11 +498,6 @@ void config_PWM()
 #ifdef ACTIVA_P1B3
 void excita_motor(float v_motor) // voltaje en motor
 {
-	// printf("excita_motor\n");
-
-	// Sentido de giro del motor
-	digitalWrite(PWM_r, HIGH);
-	digitalWrite(PWM_f, LOW);
 	// Calcula y limita el valor de configuración del PWM
 	// sentido A
 	if (v_motor > 0)
@@ -414,6 +515,7 @@ void excita_motor(float v_motor) // voltaje en motor
 	{
 		v_motor = 12;
 	}
+
 	// El valor de excitación debe estar entro 0 y PWM_Max
 	v_motor = map(abs(v_motor), 0, 12, 0, PWM_Max);
 	// vmotor=
