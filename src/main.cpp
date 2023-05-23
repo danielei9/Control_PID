@@ -86,11 +86,15 @@ float v_medida = 0;	   // Valor medido de angulo o velocidad -----------------
 float ref_val = 0;	   // Valor de referencia de angulo o velocidad
 int8_t start_stop = 0; // 1 -> en funcionamiento | 0 -> parado
 // float K_p = ;
-float kp = 5.0, kd = 1.0, ki = 5.0;
+// VELOCIDAD
+float kp = 5.0, kd = 0.1, ki = 5.0;
+float Tm = 0.01;
+
 // Declaracion objetos  ////////////////////////////////////////////////////////////////////
 
 xQueueHandle cola_enc; // Cola encoder
 
+float proporcional, integral, derivativo;
 /*
  RUTINAS ATENCION INTERRUPCIONES ########################################################################
 */
@@ -146,19 +150,19 @@ void task_enc(void *arg)
 
 			// Codificar la fase del encoder
 			// HIGH va a ser el a y Low B
-			switch (byteVal)
+			switch (buff[0])
 			{
 			case 0: //
-				byteVal = 1;
+				buff[0] = 1;
 				break;
 			case 1: //
-				byteVal = 2;
+				buff[0] = 2;
 				break;
 			case 2: //
-				byteVal = 4;
+				buff[0] = 4;
 				break;
 			case 3: //
-				byteVal = 3;
+				buff[0] = 3;
 				break;
 			}
 			// Serial.println(byteVal);
@@ -166,7 +170,7 @@ void task_enc(void *arg)
 
 			// Calcular incremento/decremento y actualizar valor
 
-			if (byteVal == 4)
+			if (buff[0] == 4)
 			{
 				if (lastByteVal == 3)
 				{
@@ -177,7 +181,7 @@ void task_enc(void *arg)
 					ang_cnt--;
 				}
 			}
-			else if (byteVal == 1)
+			else if (buff[0] == 1)
 			{
 				if (lastByteVal == 2)
 				{
@@ -190,7 +194,7 @@ void task_enc(void *arg)
 			}
 			else
 			{
-				if (lastByteVal < byteVal)
+				if (lastByteVal < buff[0])
 				{
 					ang_cnt++;
 				}
@@ -200,7 +204,7 @@ void task_enc(void *arg)
 				}
 			}
 
-			lastByteVal = byteVal;
+			lastByteVal = buff[0];
 
 #ifdef DEBUG_P1A
 			// Enviar al monitor serie
@@ -243,9 +247,12 @@ void task_config(void *pvParameter)
 				// En caso de ser Angulo se debe convertir a radianes
 				if (angulo)
 				{
-					kp = 4;
-					kd = 0;
-					ki = 0.02;
+					// USAR ESTOS VALORES EN ANGULO
+					kp = 10.0, kd = 1.0, ki = 5.0;
+
+					// kp = 10; //3.5
+					// kd = 0.1;
+					// ki = 0.02;
 					ref_val = ref_val * PI / 180;
 				}
 
@@ -311,7 +318,7 @@ void task_loopcontr(void *arg)
 		lastAngulo = v_medida;
 		v_medida = -(2 * PI * ang_cnt) / 1200; // ang radianes V10
 
-		vel = (v_medida - lastAngulo) / 0.01; // en segundos
+		vel = (v_medida - lastAngulo) / Tm; // en segundos
 		vel = vel / (2 * PI);
 
 		if (angulo)
@@ -336,10 +343,11 @@ void task_loopcontr(void *arg)
 				pwm_volt += 0.2;
 
 #endif
-			float proporcional = (error * kp);				// implementación de kp se
-			float integral = ((error + lastIntegral) * ki); // implementación de kp se
-			float derivartivo = ((error - lastError) * kd); // (sum(lastError - error) * ki); // implementación de kp se
-			pwm_volt = proporcional + integral + derivartivo;
+			proporcional = (error * kp);				  // implementación de kp se
+			integral = (lastIntegral + error * ki * Tm);  // implementación de kp se
+			derivativo = ((error - lastError) * kd / Tm); // (sum(lastError - error) * ki); // implementación de kp se
+
+			pwm_volt = proporcional + integral + derivativo;
 			// WindUP
 			//  SI la salida esta saturada
 			if (windup)
@@ -347,7 +355,7 @@ void task_loopcontr(void *arg)
 				if (abs(pwm_volt) > 9)
 				{
 					// Quitamos integral
-					pwm_volt = proporcional + derivartivo;
+					integral = lastIntegral;
 				}
 			}
 		}
@@ -359,7 +367,7 @@ void task_loopcontr(void *arg)
 			v_medida = 0;
 		}
 		lastError = error;
-
+		lastIntegral = integral;
 		//  Excitacion del motor con PWM
 		excita_motor(pwm_volt);
 		// Activacion de la tarea cada 0.01s
@@ -380,7 +388,7 @@ void task_medidas(void *arg)
 		if (angulo)
 		{
 			float ang = v_medida * (360 / (2 * PI));
-			printf(" radianes: %f, error: %f, ref: %f \n", v_medida, error, ref_val);
+			printf(" radianes: %f, error: %f, ref: %f, proporcional: %f, integral: %f, derivativo: %f, vmotor: %f\n", v_medida, error, ref_val, proporcional, integral, derivativo, pwm_volt);
 			// printf("grados: %f, radianes: %f, error: %f, ref: %f \n", ang, v_medida, error, ref_val);
 		}
 		else
@@ -389,7 +397,7 @@ void task_medidas(void *arg)
 			// printf("velocidad: %f, lastAng: %f, currentAng: %f, refVal: %f, kp: %f, kd: %f, ki: %f\n", vel, lastAngulo, v_medida, ref_val, kp, kd, ki);
 			printf("velocidad: %f, refVal: %f\n", vel, ref_val);
 		}
-		lastError = error;
+
 		vTaskDelay(BLOQUEO_TAREA_MEDIDA_MS / portTICK_PERIOD_MS);
 		// Activacion de la tarea cada 1s
 	}
@@ -500,15 +508,18 @@ void excita_motor(float v_motor) // voltaje en motor
 {
 	// Calcula y limita el valor de configuración del PWM
 	// sentido A
+	// printf("vmotor AA %f", v_motor);
 	if (v_motor > 0)
 	{
 		digitalWrite(PWM_r, HIGH);
 		digitalWrite(PWM_f, LOW);
+		// printf("GIRA 1\n");
 	}
 	if (v_motor < 0)
 	{
 		digitalWrite(PWM_r, LOW);
 		digitalWrite(PWM_f, HIGH);
+		// printf("GIRA 2\n");
 	}
 
 	if (abs(v_motor) > 12)
@@ -518,6 +529,7 @@ void excita_motor(float v_motor) // voltaje en motor
 
 	// El valor de excitación debe estar entro 0 y PWM_Max
 	v_motor = map(abs(v_motor), 0, 12, 0, PWM_Max);
+	// printf("** vmotor BB %f\n", v_motor);
 	// vmotor=
 	//  Excitacion del motor con PWM
 	ledcWrite(pwmChannel, v_motor);
