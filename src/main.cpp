@@ -103,8 +103,10 @@ float proporcional, integral, derivativo;
  Rutina de atención a interrupción ISC_enc --------------------------------------------
 */
 bool angulo = true;
-bool windup = true;
-
+bool windupCondicional = false, windupRecalculation = true;
+bool deadZone = true;
+float windupRecalculationBranch = 0;
+float kWindupRecalculation = 0.9;
 void IRAM_ATTR ISR_enc()
 {
 	// Lee las salidas del Encoder
@@ -285,17 +287,40 @@ void task_config(void *pvParameter)
 				ki = recived;
 				printf("El ki valor es %f.\n", ki);
 			}
+			// Activar en angulos
 			else if (ini_char == 'A')
 			{
 				float recived = Serial.parseInt();
 				angulo = recived;
 				printf("Referencia en angulo activada?  %d.\n", angulo);
 			}
+			// windup Condicional
 			else if (ini_char == 'W')
 			{
 				float recived = Serial.parseInt();
-				windup = recived;
-				printf("Windup activado?  %d.\n", windup);
+				windupCondicional = recived;
+				printf("Windup activado?  %d.\n", windupCondicional);
+			}
+			// windup recalculation
+			else if (ini_char == 'w')
+			{
+				float recived = Serial.parseInt();
+				windupRecalculation = recived;
+				printf("Windup activado?  %d.\n", windupRecalculation);
+			}
+			// Zona Muerta
+			else if (ini_char == 'Z')
+			{
+				float recived = Serial.parseInt();
+				deadZone = recived;
+				printf("Zona muerta?  %d.\n", deadZone);
+			}
+			// Cambiar kwindupRecalculation
+			else if (ini_char == 'c')
+			{
+				float recived = Serial.parseFloat();
+				kWindupRecalculation = recived;
+				printf("El kWindupRecalculation valor es %f.\n", kWindupRecalculation);
 			}
 		}
 		// Activacion de la tarea cada 0.1s
@@ -313,6 +338,7 @@ float error = 0;
 #ifdef ACTIVA_P1B3
 void task_loopcontr(void *arg)
 {
+
 	while (1)
 	{
 		lastAngulo = v_medida;
@@ -343,20 +369,57 @@ void task_loopcontr(void *arg)
 				pwm_volt += 0.2;
 
 #endif
-			proporcional = (error * kp);				  // implementación de kp se
-			integral = (lastIntegral + error * ki * Tm);  // implementación de kp se
-			derivativo = ((error - lastError) * kd / Tm); // (sum(lastError - error) * ki); // implementación de kp se
+			proporcional = (error * kp);
+			integral = Tm * (ki * (error - (windupRecalculationBranch * kWindupRecalculation))) + lastIntegral;
+			derivativo = ((error - lastError) * kd / Tm);
+			// integral = ((lastIntegral +( error * ki ))* Tm) ; // implementación de kp se
 
 			pwm_volt = proporcional + integral + derivativo;
-			// WindUP
-			//  SI la salida esta saturada
-			if (windup)
+
+			if (windupCondicional)
 			{
+				// WindUP condicional (Solo activar o condicional o recalculation no los dos a la vez)
+				// Windup condicional si el valor absoluto, es mayor que lo que podemos ofrecer que son 9V,
+				// paramos en 9v para que no siga integrando ya que no vamos a poder ofrecer mas voltaje
+				//-------------------------
+				//  SI la salida esta saturada
 				if (abs(pwm_volt) > 9)
 				{
 					// Quitamos integral
 					integral = lastIntegral;
 				}
+				//-------------------------
+			}
+
+			// WIndup Recalculation (Solo activar o condicional o recalculation no los dos a la vez)
+			// en vez de comparar ver la diferencia del valor que metemos y sale,salida del pid, lo restamos con el valor saturado si es mayor que 9 se queda en 9
+			// esto lo guardamos y en el siguiente ciclo se lo restamos a la entrada, esta resta tiene que ir multiplicada por una constante
+			// Tcb que será la inversa de Tm
+			if (windupRecalculation)
+			{
+				if (abs(pwm_volt) > 9)
+				{
+					// Quitamos integral
+					if (pwm_volt > 0)
+						windupRecalculationBranch = pwm_volt - 9;
+					if (pwm_volt < 0)
+						windupRecalculationBranch = pwm_volt - (-9);
+				}
+				else
+				{
+					windupRecalculationBranch = 0;
+				}
+			}
+			if (deadZone)
+			{
+				if (abs(pwm_volt) < 0.2)
+					pwm_volt = 0;
+
+				if (pwm_volt > 0)
+					pwm_volt += 1.8;
+					
+				if (pwm_volt < 0)
+					pwm_volt -= 1.8;
 			}
 		}
 		else
@@ -385,17 +448,21 @@ void task_medidas(void *arg)
 	while (1)
 	{
 		// Mostrar medidas de angulo y velocidad del motor
-		if (angulo)
+		if (start_stop)
 		{
-			float ang = v_medida * (360 / (2 * PI));
-			printf(" radianes: %f, error: %f, ref: %f, proporcional: %f, integral: %f, derivativo: %f, vmotor: %f\n", v_medida, error, ref_val, proporcional, integral, derivativo, pwm_volt);
-			// printf("grados: %f, radianes: %f, error: %f, ref: %f \n", ang, v_medida, error, ref_val);
-		}
-		else
-		{
-			//  kp = 5.0, kd = 1.0, ki = 5.0;
-			// printf("velocidad: %f, lastAng: %f, currentAng: %f, refVal: %f, kp: %f, kd: %f, ki: %f\n", vel, lastAngulo, v_medida, ref_val, kp, kd, ki);
-			printf("velocidad: %f, refVal: %f\n", vel, ref_val);
+			if (angulo)
+			{
+				float ang = v_medida * (360 / (2 * PI));
+				printf(" radianes: %f, error: %f, ref: %f, proporcional: %f, integral: %f, derivativo: %f, vmotor: %f\n", v_medida, error, ref_val, proporcional, integral, derivativo, pwm_volt);
+				// printf("grados: %f, radianes: %f, error: %f, ref: %f \n", ang, v_medida, error, ref_val);
+			}
+			else
+			{
+				//  kp = 5.0, kd = 1.0, ki = 5.0;
+				// printf("velocidad: %f, lastAng: %f, currentAng: %f, refVal: %f, kp: %f, kd: %f, ki: %f\n", vel, lastAngulo, v_medida, ref_val, kp, kd, ki);
+				// printf("velocidad: %f, refVal: %f\n", vel, ref_val);
+				printf("velocidad: %f, error: %f, ref: %f, proporcional: %f, integral: %f, derivativo: %f, vmotor: %f\n", vel, error, ref_val, proporcional, integral, derivativo, pwm_volt);
+			}
 		}
 
 		vTaskDelay(BLOQUEO_TAREA_MEDIDA_MS / portTICK_PERIOD_MS);
