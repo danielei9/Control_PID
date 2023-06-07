@@ -354,9 +354,6 @@ void task_loopcontr(void *arg)
 		else
 			error = ref_val - vel;
 
-		// if (pwm_volt < 0)
-		// 	vel = -vel;
-
 		if (start_stop)
 		{
 #ifdef ACTIVA_P1D2
@@ -372,7 +369,6 @@ void task_loopcontr(void *arg)
 			proporcional = (error * kp);
 			integral = Tm * (ki * (error - (windupRecalculationBranch * kWindupRecalculation))) + lastIntegral;
 			derivativo = ((error - lastError) * kd / Tm);
-			// integral = ((lastIntegral +( error * ki ))* Tm) ; // implementación de kp se
 
 			pwm_volt = proporcional + integral + derivativo;
 
